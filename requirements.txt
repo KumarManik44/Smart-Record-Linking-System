@@ -8,5 +8,6 @@ scikit-learn>=1.1.0
 # Web framework for deployment
 streamlit>=1.28.0
 
-# Data visualization (used in matplotlib.pyplot)
+# Data visualization
 matplotlib>=3.5.0
+plotly>=5.0.0
