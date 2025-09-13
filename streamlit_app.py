@@ -9,6 +9,266 @@ import re
 from difflib import SequenceMatcher
 from typing import Dict, List, Tuple, Any
 
+# ===== REQUIRED CLASSES FOR PICKLE LOADING =====
+# These classes must be defined before loading the pickle file
+
+class RecordLinkingFeatureExtractor:
+    """
+    Extracts sophisticated features from record pairs for ML training
+    """
+    
+    def __init__(self):
+        self.feature_names = []
+        
+    def levenshtein_distance(self, s1: str, s2: str) -> int:
+        """Calculate Levenshtein distance using dynamic programming"""
+        if len(s1) < len(s2):
+            return self.levenshtein_distance(s2, s1)
+        
+        if len(s2) == 0:
+            return len(s1)
+        
+        previous_row = list(range(len(s2) + 1))
+        for i, c1 in enumerate(s1):
+            current_row = [i + 1]
+            for j, c2 in enumerate(s2):
+                insertions = previous_row[j + 1] + 1
+                deletions = current_row[j] + 1
+                substitutions = previous_row[j] + (c1 != c2)
+                current_row.append(min(insertions, deletions, substitutions))
+            previous_row = current_row
+        
+        return previous_row[-1]
+    
+    def jaro_similarity(self, s1: str, s2: str) -> float:
+        """Calculate Jaro similarity"""
+        if not s1 and not s2:
+            return 1.0
+        if not s1 or not s2:
+            return 0.0
+        
+        # Calculate the match window
+        match_window = max(len(s1), len(s2)) // 2 - 1
+        match_window = max(0, match_window)
+        
+        s1_matches = [False] * len(s1)
+        s2_matches = [False] * len(s2)
+        
+        matches = 0
+        transpositions = 0
+        
+        # Find matches
+        for i in range(len(s1)):
+            start = max(0, i - match_window)
+            end = min(i + match_window + 1, len(s2))
+            
+            for j in range(start, end):
+                if s2_matches[j] or s1[i] != s2[j]:
+                    continue
+                s1_matches[i] = True
+                s2_matches[j] = True
+                matches += 1
+                break
+        
+        if matches == 0:
+            return 0.0
+        
+        # Count transpositions  
+        k = 0
+        for i in range(len(s1)):
+            if not s1_matches[i]:
+                continue
+            while not s2_matches[k]:
+                k += 1
+            if s1[i] != s2[k]:
+                transpositions += 1
+            k += 1
+        
+        jaro = (matches / len(s1) + matches / len(s2) + 
+                (matches - transpositions / 2) / matches) / 3
+        
+        return jaro
+    
+    def string_similarity(self, str1: str, str2: str) -> Dict[str, float]:
+        """Calculate multiple string similarity metrics"""
+        if pd.isna(str1) or pd.isna(str2):
+            return {'exact_match': 0.0, 'levenshtein': 0.0, 'jaro': 0.0, 'sequence_match': 0.0}
+        
+        str1, str2 = str(str1).lower().strip(), str(str2).lower().strip()
+        
+        # Exact match
+        exact_match = 1.0 if str1 == str2 else 0.0
+        
+        # Levenshtein distance (normalized)
+        max_len = max(len(str1), len(str2))
+        levenshtein = 1.0 - (self.levenshtein_distance(str1, str2) / max_len) if max_len > 0 else 0.0
+        
+        # Jaro similarity
+        jaro = self.jaro_similarity(str1, str2)
+        
+        # Sequence matcher
+        sequence_match = SequenceMatcher(None, str1, str2).ratio()
+        
+        return {
+            'exact_match': exact_match,
+            'levenshtein': levenshtein,
+            'jaro': jaro,
+            'sequence_match': sequence_match
+        }
+    
+    def extract_numeric_core(self, id_str: str) -> str:
+        """Extract numeric core from ID string"""
+        if pd.isna(id_str):
+            return ""
+        
+        # Extract all digits
+        digits = re.findall(r'\d+', str(id_str))
+        return ''.join(digits) if digits else ""
+
+    def id_pattern_features(self, id_a: str, id_b: str) -> Dict[str, float]:
+        """Extract ID-specific pattern features"""
+        features = {}
+        
+        # Numeric core similarity
+        core_a = self.extract_numeric_core(id_a)
+        core_b = self.extract_numeric_core(id_b)
+        
+        # Check if one core contains the other (for transformations like INV-123 → 2025123)
+        if core_a and core_b:
+            features['id_core_exact'] = 1.0 if core_a == core_b else 0.0
+            features['id_core_contains'] = 1.0 if (core_a in core_b or core_b in core_a) else 0.0
+            
+            # Calculate similarity even if not exact match
+            core_similarity = self.string_similarity(core_a, core_b)
+            features['id_core_levenshtein'] = core_similarity['levenshtein']
+        else:
+            features.update({'id_core_exact': 0.0, 'id_core_contains': 0.0, 'id_core_levenshtein': 0.0})
+        
+        # Pattern type matching
+        def get_pattern_type(id_str):
+            if pd.isna(id_str):
+                return "null"
+            id_str = str(id_str)
+            if 'INV-' in id_str:
+                return "inv_format"
+            elif 'REF-' in id_str:
+                return "ref_format"
+            elif '#' in id_str and '::' in id_str:
+                return "hash_format"
+            elif '/' in id_str:
+                return "slash_format"
+            elif '-' in id_str and 'INV-' not in id_str and 'REF-' not in id_str:
+                return "dash_format"
+            elif re.match(r'^\d+$', id_str):
+                return "numeric_only"
+            else:
+                return "other"
+        
+        pattern_a = get_pattern_type(id_a)
+        pattern_b = get_pattern_type(id_b)
+        features['id_same_pattern'] = 1.0 if pattern_a == pattern_b else 0.0
+        features['id_pattern_compatibility'] = 1.0 if (
+            (pattern_a == "inv_format" and pattern_b in ["numeric_only", "dash_format", "slash_format"]) or
+            (pattern_b == "inv_format" and pattern_a in ["numeric_only", "dash_format", "slash_format"]) or
+            pattern_a == pattern_b
+        ) else 0.0
+        
+        return features
+
+    def amount_features(self, amount_a: float, amount_b: float) -> Dict[str, float]:
+        """Extract amount-related features"""
+        features = {}
+        
+        try:
+            amt_a = float(amount_a) if not pd.isna(amount_a) else 0.0
+            amt_b = float(amount_b) if not pd.isna(amount_b) else 0.0
+            
+            # Exact match
+            features['amount_exact_match'] = 1.0 if abs(amt_a - amt_b) < 0.01 else 0.0
+            
+            # Percentage difference
+            if max(amt_a, amt_b) > 0:
+                pct_diff = abs(amt_a - amt_b) / max(amt_a, amt_b)
+                features['amount_pct_diff'] = min(pct_diff, 1.0)  # Cap at 100%
+                features['amount_close_match'] = 1.0 if pct_diff < 0.01 else 0.0  # Within 1%
+                features['amount_reasonable_match'] = 1.0 if pct_diff < 0.05 else 0.0  # Within 5%
+            else:
+                features['amount_pct_diff'] = 1.0
+                features['amount_close_match'] = 0.0
+                features['amount_reasonable_match'] = 0.0
+            
+            # Amount magnitude similarity
+            if amt_a > 0 and amt_b > 0:
+                ratio = min(amt_a, amt_b) / max(amt_a, amt_b)
+                features['amount_ratio'] = ratio
+            else:
+                features['amount_ratio'] = 0.0
+                
+        except (ValueError, TypeError):
+            features.update({
+                'amount_exact_match': 0.0, 'amount_pct_diff': 1.0, 'amount_close_match': 0.0,
+                'amount_reasonable_match': 0.0, 'amount_ratio': 0.0
+            })
+        
+        return features
+
+    def date_features(self, date_a: str, date_b: str) -> Dict[str, float]:
+        """Extract date-related features"""
+        features = {}
+        
+        try:
+            dt_a = pd.to_datetime(date_a)
+            dt_b = pd.to_datetime(date_b)
+            
+            # Exact date match
+            features['date_exact_match'] = 1.0 if dt_a.date() == dt_b.date() else 0.0
+            
+            # Date difference in days
+            date_diff = abs((dt_a - dt_b).days)
+            features['date_diff_days'] = min(date_diff, 365) / 365  # Normalize to [0,1]
+            features['date_within_1_day'] = 1.0 if date_diff <= 1 else 0.0
+            features['date_within_7_days'] = 1.0 if date_diff <= 7 else 0.0
+            
+        except (ValueError, TypeError):
+            features.update({
+                'date_exact_match': 0.0, 'date_diff_days': 1.0, 
+                'date_within_1_day': 0.0, 'date_within_7_days': 0.0
+            })
+        
+        return features
+
+    def extract_pair_features(self, record_a: Dict, record_b: Dict) -> Dict[str, float]:
+        """Extract all features for a record pair"""
+        features = {}
+        
+        # ID features
+        id_features = self.id_pattern_features(record_a.get('invoice_id'), record_b.get('ref_code'))
+        features.update(id_features)
+        
+        # Name similarity features
+        name_features = self.string_similarity(record_a.get('customer_name'), record_b.get('client'))
+        features.update({f'name_{k}': v for k, v in name_features.items()})
+        
+        # Email similarity features  
+        email_features = self.string_similarity(record_a.get('customer_email'), record_b.get('email'))
+        features.update({f'email_{k}': v for k, v in email_features.items()})
+        
+        # Amount features
+        amount_features = self.amount_features(record_a.get('total_amount'), record_b.get('grand_total'))
+        features.update(amount_features)
+        
+        # Date features
+        date_features = self.date_features(record_a.get('invoice_date'), record_b.get('doc_date'))
+        features.update(date_features)
+        
+        # PO number similarity
+        po_features = self.string_similarity(record_a.get('po_number'), record_b.get('purchase_order'))
+        features.update({f'po_{k}': v for k, v in po_features.items()})
+        
+        return features
+
+# ===== END OF REQUIRED CLASSES =====
+
 # Page configuration
 st.set_page_config(
     page_title="Cross-Source Record Linking",
@@ -71,62 +331,63 @@ Upload your CSV files or use the sample data to see how the system identifies ma
 def load_model():
     """Load the trained model with caching"""
     try:
-        with open('data/record_linking_model.pkl', 'rb') as f:
+        with open('record_linking_model.pkl', 'rb') as f:
             return pickle.load(f)
     except FileNotFoundError:
-        try:
-            with open('record_linking_model.pkl', 'rb') as f:
-                return pickle.load(f)
-        except FileNotFoundError:
-            st.error("Model file not found. Please ensure 'record_linking_model.pkl' is in the correct location.")
-            return None
+        st.error("❌ Model file 'record_linking_model.pkl' not found. Please ensure it's in the project directory.")
+        return None
+    except Exception as e:
+        st.error(f"❌ Error loading model: {str(e)}")
+        return None
 
 @st.cache_data
 def load_sample_data():
     """Load sample data with caching"""
     try:
-        source_a = pd.read_csv('data/Project7SourceA.csv')
-        source_b = pd.read_csv('data/Project7SourceB.csv')
+        source_a = pd.read_csv('Project7SourceA.csv')
+        source_b = pd.read_csv('Project7SourceB.csv')
         return source_a, source_b
     except FileNotFoundError:
-        try:
-            source_a = pd.read_csv('Project7SourceA.csv')
-            source_b = pd.read_csv('Project7SourceB.csv')
-            return source_a, source_b
-        except FileNotFoundError:
-            return None, None
+        return None, None
+    except Exception as e:
+        st.error(f"❌ Error loading sample data: {str(e)}")
+        return None, None
 
 def predict_record_match(record_a: dict, record_b: dict, model_data: dict) -> dict:
     """Production function to predict if two records match"""
     if model_data is None:
         return None
     
-    # Extract features using the loaded feature extractor
-    features = model_data['feature_extractor'].extract_pair_features(record_a, record_b)
-    feature_vector = np.array([list(features.values())])
-    
-    # Make prediction
-    probabilities = model_data['model'].predict_proba(feature_vector)[0]
-    prediction = model_data['model'].predict(feature_vector)[0]
-    
-    # Get feature importance contributions
-    feature_importance = model_data['model'].feature_importances_
-    feature_contributions = {}
-    for i, (name, value) in enumerate(features.items()):
-        contribution = value * feature_importance[i]
-        feature_contributions[name] = contribution
-    
-    # Sort by contribution
-    top_features = sorted(feature_contributions.items(), key=lambda x: x[1], reverse=True)[:5]
-    
-    return {
-        'prediction': int(prediction),
-        'match_probability': float(probabilities[1]),
-        'no_match_probability': float(probabilities[0]),
-        'confidence': 'High' if max(probabilities) > 0.8 else 'Medium' if max(probabilities) > 0.6 else 'Low',
-        'top_contributing_features': top_features,
-        'all_features': features
-    }
+    try:
+        # Extract features using the loaded feature extractor
+        features = model_data['feature_extractor'].extract_pair_features(record_a, record_b)
+        feature_vector = np.array([list(features.values())])
+        
+        # Make prediction
+        probabilities = model_data['model'].predict_proba(feature_vector)[0]
+        prediction = model_data['model'].predict(feature_vector)[0]
+        
+        # Get feature importance contributions
+        feature_importance = model_data['model'].feature_importances_
+        feature_contributions = {}
+        for i, (name, value) in enumerate(features.items()):
+            contribution = value * feature_importance[i]
+            feature_contributions[name] = contribution
+        
+        # Sort by contribution
+        top_features = sorted(feature_contributions.items(), key=lambda x: x[1], reverse=True)[:5]
+        
+        return {
+            'prediction': int(prediction),
+            'match_probability': float(probabilities[1]),
+            'no_match_probability': float(probabilities[0]),
+            'confidence': 'High' if max(probabilities) > 0.8 else 'Medium' if max(probabilities) > 0.6 else 'Low',
+            'top_contributing_features': top_features,
+            'all_features': features
+        }
+    except Exception as e:
+        st.error(f"❌ Prediction error: {str(e)}")
+        return None
 
 def create_feature_chart(features_dict):
     """Create a horizontal bar chart for feature importance"""
@@ -152,54 +413,6 @@ def create_feature_chart(features_dict):
     )
     
     return fig
-
-def find_best_matches(source_a_df, source_b_df, model_data, top_n=10):
-    """Find top N best matches between datasets"""
-    if model_data is None:
-        return []
-    
-    matches = []
-    
-    # Sample records to avoid timeout (adjust as needed)
-    sample_size_a = min(50, len(source_a_df))
-    sample_size_b = min(50, len(source_b_df))
-    
-    sample_a = source_a_df.sample(n=sample_size_a, random_state=42)
-    sample_b = source_b_df.sample(n=sample_size_b, random_state=42)
-    
-    progress_bar = st.progress(0)
-    status_text = st.empty()
-    
-    total_comparisons = len(sample_a) * len(sample_b)
-    current_comparison = 0
-    
-    for i, (_, record_a) in enumerate(sample_a.iterrows()):
-        for j, (_, record_b) in enumerate(sample_b.iterrows()):
-            current_comparison += 1
-            
-            if current_comparison % 100 == 0:
-                progress = current_comparison / total_comparisons
-                progress_bar.progress(progress)
-                status_text.text(f'Comparing records... {current_comparison}/{total_comparisons}')
-            
-            result = predict_record_match(record_a.to_dict(), record_b.to_dict(), model_data)
-            
-            if result and result['match_probability'] > 0.5:  # Only include likely matches
-                matches.append({
-                    'source_a_idx': i,
-                    'source_b_idx': j,
-                    'match_probability': result['match_probability'],
-                    'confidence': result['confidence'],
-                    'record_a': record_a.to_dict(),
-                    'record_b': record_b.to_dict()
-                })
-    
-    progress_bar.empty()
-    status_text.empty()
-    
-    # Sort by match probability and return top N
-    matches.sort(key=lambda x: x['match_probability'], reverse=True)
-    return matches[:top_n]
 
 # Load model and sample data
 model_data = load_model()
@@ -240,198 +453,68 @@ else:
         source_b_df = pd.read_csv(uploaded_file_b)
         st.sidebar.success(f"✅ Source B loaded: {len(source_b_df)} records")
 
-# Main app tabs
+# Main app
 if source_a_df is not None and source_b_df is not None and model_data is not None:
-    tab1, tab2, tab3, tab4 = st.tabs(["🔍 Single Record Comparison", "📊 Batch Processing", "📈 Model Information", "📋 Data Explorer"])
+    st.success("🎉 **System Ready!** Model and data loaded successfully.")
     
-    with tab1:
-        st.header("🔍 Single Record Comparison")
-        st.markdown("Compare individual records from both sources to see matching predictions.")
+    # Single Record Comparison
+    st.header("🔍 Single Record Comparison")
+    st.markdown("Compare individual records from both sources to see matching predictions.")
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.subheader("📄 Source A Record")
+        record_a_idx = st.selectbox(
+            "Select a record from Source A:",
+            range(len(source_a_df)),
+            format_func=lambda x: f"Row {x}: {source_a_df.iloc[x].get('invoice_id', source_a_df.iloc[x].get('customer_name', f'Record {x}'))}"
+        )
         
-        col1, col2 = st.columns(2)
+        record_a = source_a_df.iloc[record_a_idx]
+        st.dataframe(record_a.to_frame().T, use_container_width=True)
+    
+    with col2:
+        st.subheader("📄 Source B Record")
+        record_b_idx = st.selectbox(
+            "Select a record from Source B:",
+            range(len(source_b_df)),
+            format_func=lambda x: f"Row {x}: {source_b_df.iloc[x].get('ref_code', source_b_df.iloc[x].get('client', f'Record {x}'))}"
+        )
         
-        with col1:
-            st.subheader("📄 Source A Record")
-            record_a_idx = st.selectbox(
-                "Select a record from Source A:",
-                range(len(source_a_df)),
-                format_func=lambda x: f"Row {x}: {source_a_df.iloc[x].get('invoice_id', source_a_df.iloc[x].get('customer_name', f'Record {x}'))}"
-            )
+        record_b = source_b_df.iloc[record_b_idx]
+        st.dataframe(record_b.to_frame().T, use_container_width=True)
+    
+    # Prediction button
+    if st.button("🔄 Compare Records", type="primary"):
+        with st.spinner("Analyzing records..."):
+            result = predict_record_match(record_a.to_dict(), record_b.to_dict(), model_data)
             
-            record_a = source_a_df.iloc[record_a_idx]
-            st.dataframe(record_a.to_frame().T, use_container_width=True)
-        
-        with col2:
-            st.subheader("📄 Source B Record")
-            record_b_idx = st.selectbox(
-                "Select a record from Source B:",
-                range(len(source_b_df)),
-                format_func=lambda x: f"Row {x}: {source_b_df.iloc[x].get('ref_code', source_b_df.iloc[x].get('client', f'Record {x}'))}"
-            )
-            
-            record_b = source_b_df.iloc[record_b_idx]
-            st.dataframe(record_b.to_frame().T, use_container_width=True)
-        
-        # Prediction button
-        if st.button("🔄 Compare Records", type="primary"):
-            with st.spinner("Analyzing records..."):
-                result = predict_record_match(record_a.to_dict(), record_b.to_dict(), model_data)
+            if result:
+                # Display result
+                match_class = "match-yes" if result['prediction'] == 1 else "match-no"
+                match_text = "✅ MATCH DETECTED" if result['prediction'] == 1 else "❌ NO MATCH"
                 
-                if result:
-                    # Display result
-                    match_class = "match-yes" if result['prediction'] == 1 else "match-no"
-                    match_text = "✅ MATCH DETECTED" if result['prediction'] == 1 else "❌ NO MATCH"
-                    
-                    st.markdown(f'<div class="match-result {match_class}">{match_text}</div>', unsafe_allow_html=True)
-                    
-                    # Metrics
-                    col1, col2, col3 = st.columns(3)
-                    col1.metric("Match Probability", f"{result['match_probability']:.1%}")
-                    col2.metric("Confidence Level", result['confidence'])
-                    col3.metric("Prediction", "Match" if result['prediction'] == 1 else "No Match")
-                    
-                    # Feature analysis
-                    st.subheader("🧠 Feature Analysis")
-                    
-                    # Top contributing features
-                    st.markdown("**Top Contributing Features:**")
-                    for i, (feature, contribution) in enumerate(result['top_contributing_features']):
-                        feature_display = feature.replace('_', ' ').title()
-                        st.markdown(f"**{i+1}.** {feature_display}: {contribution:.4f}")
-                    
-                    # Feature chart
-                    if result['all_features']:
-                        st.plotly_chart(create_feature_chart(result['all_features']), use_container_width=True)
-    
-    with tab2:
-        st.header("📊 Batch Processing")
-        st.markdown("Find the best matches across all records in both datasets.")
-        
-        col1, col2 = st.columns([3, 1])
-        
-        with col2:
-            max_results = st.slider("Maximum results to show:", 5, 50, 10)
-            min_probability = st.slider("Minimum match probability:", 0.0, 1.0, 0.7, 0.1)
-        
-        with col1:
-            if st.button("🚀 Find Best Matches", type="primary"):
-                with st.spinner("Processing all record combinations..."):
-                    matches = find_best_matches(source_a_df, source_b_df, model_data, max_results)
-                    
-                    if matches:
-                        # Filter by minimum probability
-                        filtered_matches = [m for m in matches if m['match_probability'] >= min_probability]
-                        
-                        if filtered_matches:
-                            st.success(f"Found {len(filtered_matches)} high-confidence matches!")
-                            
-                            # Create results table
-                            results_data = []
-                            for i, match in enumerate(filtered_matches):
-                                results_data.append({
-                                    'Rank': i + 1,
-                                    'Match Probability': f"{match['match_probability']:.1%}",
-                                    'Confidence': match['confidence'],
-                                    'Source A ID': match['record_a'].get('invoice_id', 'N/A'),
-                                    'Source B ID': match['record_b'].get('ref_code', 'N/A'),
-                                    'Source A Name': match['record_a'].get('customer_name', 'N/A'),
-                                    'Source B Name': match['record_b'].get('client', 'N/A'),
-                                    'Amount A': match['record_a'].get('total_amount', 'N/A'),
-                                    'Amount B': match['record_b'].get('grand_total', 'N/A')
-                                })
-                            
-                            results_df = pd.DataFrame(results_data)
-                            st.dataframe(results_df, use_container_width=True)
-                            
-                            # Download button
-                            csv = results_df.to_csv(index=False)
-                            st.download_button(
-                                label="💾 Download Results as CSV",
-                                data=csv,
-                                file_name=f"record_matches_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-                                mime="text/csv"
-                            )
-                        else:
-                            st.warning(f"No matches found with probability ≥ {min_probability:.0%}")
-                    else:
-                        st.info("No matches found. Try adjusting the minimum probability threshold.")
-    
-    with tab3:
-        st.header("📈 Model Information")
-        
-        if model_data:
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                st.subheader("🎯 Model Performance")
-                if 'training_stats' in model_data:
-                    stats = model_data['training_stats']
-                    st.metric("Accuracy", f"{stats.get('accuracy', 0):.1%}")
-                    st.metric("AUC Score", f"{stats.get('auc_score', 0):.3f}")
-                    st.metric("Features", stats.get('n_features', 0))
-                    st.metric("Training Samples", stats.get('n_training_samples', 0))
+                st.markdown(f'<div class="match-result {match_class}">{match_text}</div>', unsafe_allow_html=True)
                 
-                st.subheader("🧠 Model Details")
-                st.write(f"**Algorithm:** {type(model_data['model']).__name__}")
-                st.write(f"**Feature Count:** {len(model_data.get('feature_names', []))}")
-            
-            with col2:
-                st.subheader("🔧 Feature Engineering")
-                st.markdown("""
-                **26 Sophisticated Features:**
-                - **ID Pattern Features** (5): Core extraction, format compatibility
-                - **String Similarity** (12): Name, email matching with multiple metrics
-                - **Amount Features** (5): Exact match, percentage difference, ratios
-                - **Date Features** (4): Exact match, drift detection, proximity
-                """)
+                # Metrics
+                col1, col2, col3 = st.columns(3)
+                col1.metric("Match Probability", f"{result['match_probability']:.1%}")
+                col2.metric("Confidence Level", result['confidence'])
+                col3.metric("Prediction", "Match" if result['prediction'] == 1 else "No Match")
                 
-                if 'feature_names' in model_data:
-                    with st.expander("View All Feature Names"):
-                        for i, feature in enumerate(model_data['feature_names'], 1):
-                            st.write(f"{i}. {feature}")
-        
-        st.subheader("📊 Model Architecture")
-        st.markdown("""
-        **Development Process:**
-        1. **Synthetic Training Data Generation** - 1,300 examples with controlled transformations
-        2. **Multi-Model Comparison** - Tested Random Forest, Gradient Boosting, Logistic Regression, SVM
-        3. **Feature Engineering** - 26 features capturing ID patterns, similarities, amounts, dates
-        4. **Cross-Validation** - 5-fold CV with 99.90% ± 0.19% score
-        5. **Overfitting Detection** - Validated learning curves and performance gaps
-        """)
-    
-    with tab4:
-        st.header("📋 Data Explorer")
-        
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            st.subheader("📄 Source A Preview")
-            st.dataframe(source_a_df.head(10), use_container_width=True)
-            st.write(f"**Total Records:** {len(source_a_df)}")
-            st.write(f"**Columns:** {', '.join(source_a_df.columns)}")
-        
-        with col2:
-            st.subheader("📄 Source B Preview")
-            st.dataframe(source_b_df.head(10), use_container_width=True)
-            st.write(f"**Total Records:** {len(source_b_df)}")
-            st.write(f"**Columns:** {', '.join(source_b_df.columns)}")
-        
-        # Data statistics
-        st.subheader("📊 Data Statistics")
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            if 'total_amount' in source_a_df.columns:
-                st.write("**Source A Amount Distribution:**")
-                fig_a = px.histogram(source_a_df, x='total_amount', nbins=20, title="Amount Distribution - Source A")
-                st.plotly_chart(fig_a, use_container_width=True)
-        
-        with col2:
-            if 'grand_total' in source_b_df.columns:
-                st.write("**Source B Amount Distribution:**")
-                fig_b = px.histogram(source_b_df, x='grand_total', nbins=20, title="Amount Distribution - Source B")
-                st.plotly_chart(fig_b, use_container_width=True)
+                # Feature analysis
+                st.subheader("🧠 Feature Analysis")
+                
+                # Top contributing features
+                st.markdown("**Top Contributing Features:**")
+                for i, (feature, contribution) in enumerate(result['top_contributing_features']):
+                    feature_display = feature.replace('_', ' ').title()
+                    st.markdown(f"**{i+1}.** {feature_display}: {contribution:.4f}")
+                
+                # Feature chart
+                if result['all_features']:
+                    st.plotly_chart(create_feature_chart(result['all_features']), use_container_width=True)
 
 else:
     # Welcome screen
