@@ -457,67 +457,201 @@ else:
 if source_a_df is not None and source_b_df is not None and model_data is not None:
     st.success("🎉 **System Ready!** Model and data loaded successfully.")
     
-    # Single Record Comparison
-    st.header("🔍 Single Record Comparison")
-    st.markdown("Compare individual records from both sources to see matching predictions.")
+    # Configuration section
+    st.header("⚙️ Matching Configuration")
     
-    col1, col2 = st.columns(2)
-    
+    col1, col2, col3 = st.columns(3)
     with col1:
-        st.subheader("📄 Source A Record")
-        record_a_idx = st.selectbox(
-            "Select a record from Source A:",
-            range(len(source_a_df)),
-            format_func=lambda x: f"Row {x}: {source_a_df.iloc[x].get('invoice_id', source_a_df.iloc[x].get('customer_name', f'Record {x}'))}"
-        )
-        
-        record_a = source_a_df.iloc[record_a_idx]
-        st.dataframe(record_a.to_frame().T, use_container_width=True)
+        high_confidence_threshold = st.slider("High Confidence Threshold", 0.5, 1.0, 0.8, 0.05)
+        st.caption("Records above this threshold are automatically matched")
     
     with col2:
-        st.subheader("📄 Source B Record")
-        record_b_idx = st.selectbox(
-            "Select a record from Source B:",
-            range(len(source_b_df)),
-            format_func=lambda x: f"Row {x}: {source_b_df.iloc[x].get('ref_code', source_b_df.iloc[x].get('client', f'Record {x}'))}"
-        )
-        
-        record_b = source_b_df.iloc[record_b_idx]
-        st.dataframe(record_b.to_frame().T, use_container_width=True)
+        suspect_confidence_threshold = st.slider("Suspect Threshold", 0.1, 0.8, 0.3, 0.05)
+        st.caption("Records between thresholds need manual review")
     
-    # Prediction button
-    if st.button("🔄 Compare Records", type="primary"):
-        with st.spinner("Analyzing records..."):
-            result = predict_record_match(record_a.to_dict(), record_b.to_dict(), model_data)
+    with col3:
+        max_candidates = st.slider("Max Candidates per Record", 1, 10, 3)
+        st.caption("Maximum number of potential matches to consider")
+    
+    # Run batch matching
+    if st.button("🚀 Run Batch Record Linking", type="primary", use_container_width=True):
+        
+        # Progress tracking
+        progress_container = st.container()
+        with progress_container:
+            st.info("🔄 **Processing all record combinations...**")
+            progress_bar = st.progress(0)
+            status_text = st.empty()
+        
+        # Process all combinations
+        all_results = []
+        total_combinations = min(len(source_a_df) * len(source_b_df), 10000)  # Cap at 10k for demo
+        current_combo = 0
+        
+        sample_size_a = min(50, len(source_a_df))  # Sample for demo
+        sample_size_b = min(50, len(source_b_df))
+        
+        sample_a = source_a_df.sample(n=sample_size_a, random_state=42)
+        sample_b = source_b_df.sample(n=sample_size_b, random_state=42)
+        
+        for i, (_, record_a) in enumerate(sample_a.iterrows()):
+            for j, (_, record_b) in enumerate(sample_b.iterrows()):
+                current_combo += 1
+                
+                # Update progress every 50 combinations
+                if current_combo % 50 == 0:
+                    progress = min(current_combo / (sample_size_a * sample_size_b), 1.0)
+                    progress_bar.progress(progress)
+                    status_text.text(f'Processed {current_combo}/{sample_size_a * sample_size_b} combinations')
+                
+                # Get prediction
+                result = predict_record_match(record_a.to_dict(), record_b.to_dict(), model_data)
+                
+                if result and result['match_probability'] > suspect_confidence_threshold:
+                    all_results.append({
+                        'source_a_idx': record_a.name,
+                        'source_b_idx': record_b.name,
+                        'record_a': record_a.to_dict(),
+                        'record_b': record_b.to_dict(),
+                        'match_probability': result['match_probability'],
+                        'confidence_level': result['confidence'],
+                        'prediction': result['prediction'],
+                        'top_features': result['top_contributing_features'],
+                        'all_features': result['all_features']
+                    })
+        
+        # Clear progress
+        progress_container.empty()
+        
+        # Categorize results
+        matched_results = [r for r in all_results if r['match_probability'] >= high_confidence_threshold]
+        suspect_results = [r for r in all_results if suspect_confidence_threshold <= r['match_probability'] < high_confidence_threshold]
+        
+        # Sort by probability
+        matched_results.sort(key=lambda x: x['match_probability'], reverse=True)
+        suspect_results.sort(key=lambda x: x['match_probability'], reverse=True)
+        
+        # Display results in tabs
+        st.success(f"✅ **Processing Complete!** Found {len(matched_results)} matches and {len(suspect_results)} suspects")
+        
+        tab1, tab2, tab3, tab4 = st.tabs([
+            f"✅ Matched ({len(matched_results)})", 
+            f"❓ Suspects ({len(suspect_results)})", 
+            f"❌ Unmatched", 
+            f"📊 Analytics"
+        ])
+        
+        with tab1:
+            st.header("✅ High-Confidence Matches")
+            st.markdown(f"Records with **≥{high_confidence_threshold:.0%}** match probability")
             
-            if result:
-                # Display result
-                match_class = "match-yes" if result['prediction'] == 1 else "match-no"
-                match_text = "✅ MATCH DETECTED" if result['prediction'] == 1 else "❌ NO MATCH"
+            if matched_results:
+                for i, match in enumerate(matched_results[:10]):  # Show top 10
+                    with st.expander(f"Match {i+1}: {match['match_probability']:.1%} confidence"):
+                        col1, col2 = st.columns(2)
+                        
+                        with col1:
+                            st.subheader("📄 Source A")
+                            st.json(match['record_a'])
+                        
+                        with col2:
+                            st.subheader("📄 Source B") 
+                            st.json(match['record_b'])
+                        
+                        st.subheader("🧠 Why This Matched")
+                        for j, (feature, score) in enumerate(match['top_features'][:3]):
+                            st.write(f"**{j+1}.** {feature.replace('_', ' ').title()}: {score:.4f}")
+            else:
+                st.info("No high-confidence matches found. Consider lowering the threshold.")
+        
+        with tab2:
+            st.header("❓ Suspect Matches - Need Review")
+            st.markdown(f"Records with **{suspect_confidence_threshold:.0%} - {high_confidence_threshold:.0%}** match probability")
+            
+            if suspect_results:
+                for i, suspect in enumerate(suspect_results[:10]):  # Show top 10
+                    with st.expander(f"Suspect {i+1}: {suspect['match_probability']:.1%} confidence"):
+                        col1, col2, col3 = st.columns([2, 2, 1])
+                        
+                        with col1:
+                            st.subheader("📄 Source A")
+                            st.json(suspect['record_a'])
+                        
+                        with col2:
+                            st.subheader("📄 Source B")
+                            st.json(suspect['record_b'])
+                        
+                        with col3:
+                            st.subheader("👥 Review Decision")
+                            
+                            if st.button("✅ Accept Match", key=f"accept_{i}"):
+                                st.success("✅ Match accepted!")
+                                # TODO: Store decision
+                            
+                            if st.button("❌ Reject Match", key=f"reject_{i}"):
+                                st.error("❌ Match rejected!")
+                                # TODO: Store decision
+                            
+                            if st.button("📝 Adopt Pattern", key=f"adopt_{i}"):
+                                st.info("📝 Pattern adopted for future matching!")
+                                # TODO: Learn from this pattern
+                        
+                        st.subheader("🧠 Why This was Flagged")
+                        for j, (feature, score) in enumerate(suspect['top_features'][:3]):
+                            st.write(f"**{j+1}.** {feature.replace('_', ' ').title()}: {score:.4f}")
+            else:
+                st.info("No suspect matches found.")
+        
+        with tab3:
+            st.header("❌ Unmatched Records")
+            st.markdown(f"Records with **<{suspect_confidence_threshold:.0%}** match probability")
+            
+            # Calculate unmatched counts
+            matched_source_a = {r['source_a_idx'] for r in all_results}
+            matched_source_b = {r['source_b_idx'] for r in all_results}
+            
+            unmatched_a_count = len(sample_a) - len(matched_source_a)
+            unmatched_b_count = len(sample_b) - len(matched_source_b)
+            
+            col1, col2 = st.columns(2)
+            col1.metric("Unmatched Source A Records", unmatched_a_count)
+            col2.metric("Unmatched Source B Records", unmatched_b_count)
+            
+            st.info("💡 **Tip:** These records had no good matches. Consider adjusting thresholds or adding new matching rules.")
+        
+        with tab4:
+            st.header("📊 Matching Analytics")
+            
+            # Summary metrics
+            total_processed = len(all_results)
+            match_rate = len(matched_results) / total_processed * 100 if total_processed > 0 else 0
+            
+            col1, col2, col3, col4 = st.columns(4)
+            col1.metric("Total Comparisons", f"{sample_size_a * sample_size_b:,}")
+            col2.metric("Candidates Found", total_processed)
+            col3.metric("Match Rate", f"{match_rate:.1f}%")
+            col4.metric("Review Required", len(suspect_results))
+            
+            # Distribution chart
+            if all_results:
+                probabilities = [r['match_probability'] for r in all_results]
                 
-                st.markdown(f'<div class="match-result {match_class}">{match_text}</div>', unsafe_allow_html=True)
+                import plotly.express as px
+                fig = px.histogram(
+                    x=probabilities,
+                    nbins=20,
+                    title="Distribution of Match Probabilities",
+                    labels={'x': 'Match Probability', 'y': 'Count'}
+                )
+                fig.add_vline(x=high_confidence_threshold, line_dash="dash", line_color="green", 
+                             annotation_text="High Confidence")
+                fig.add_vline(x=suspect_confidence_threshold, line_dash="dash", line_color="orange",
+                             annotation_text="Suspect Threshold")
                 
-                # Metrics
-                col1, col2, col3 = st.columns(3)
-                col1.metric("Match Probability", f"{result['match_probability']:.1%}")
-                col2.metric("Confidence Level", result['confidence'])
-                col3.metric("Prediction", "Match" if result['prediction'] == 1 else "No Match")
-                
-                # Feature analysis
-                st.subheader("🧠 Feature Analysis")
-                
-                # Top contributing features
-                st.markdown("**Top Contributing Features:**")
-                for i, (feature, contribution) in enumerate(result['top_contributing_features']):
-                    feature_display = feature.replace('_', ' ').title()
-                    st.markdown(f"**{i+1}.** {feature_display}: {contribution:.4f}")
-                
-                # Feature chart
-                if result['all_features']:
-                    st.plotly_chart(create_feature_chart(result['all_features']), use_container_width=True)
+                st.plotly_chart(fig, use_container_width=True)
 
 else:
-    # Welcome screen
+    # Welcome screen (keep existing)
     st.info("👋 **Welcome!** Please load your data and ensure the model file is available to start using the record linking system.")
     
     if model_data is None:
@@ -526,11 +660,11 @@ else:
     if source_a_df is None or source_b_df is None:
         st.warning("📁 **Data not loaded.** Please select a data source in the sidebar.")
 
-# Footer
+# Footer (keep existing)
 st.markdown("---")
 st.markdown("""
 <div style='text-align: center; color: #666; font-size: 0.9rem;'>
     🔗 Cross-Source Record Linking System | Built with Streamlit & Scikit-learn | 
-    Synthetic Training Approach with 100% Accuracy
+    Progressive Matching with Analyst Control
 </div>
 """, unsafe_allow_html=True)
