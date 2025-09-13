@@ -71,7 +71,7 @@ Upload your CSV files or use the sample data to see how the system identifies ma
 def load_model():
     """Load the trained model with caching"""
     try:
-        with open('models/record_linking_model.pkl', 'rb') as f:
+        with open('data/record_linking_model.pkl', 'rb') as f:
             return pickle.load(f)
     except FileNotFoundError:
         try:
