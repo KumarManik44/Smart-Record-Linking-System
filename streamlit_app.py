@@ -331,7 +331,7 @@ Upload your CSV files or use the sample data to see how the system identifies ma
 def load_model():
     """Load the trained model with caching"""
     try:
-        with open('record_linking_model.pkl', 'rb') as f:
+        with open('data/record_linking_model.pkl', 'rb') as f:
             return pickle.load(f)
     except FileNotFoundError:
         st.error("❌ Model file 'record_linking_model.pkl' not found. Please ensure it's in the project directory.")
@@ -344,8 +344,8 @@ def load_model():
 def load_sample_data():
     """Load sample data with caching"""
     try:
-        source_a = pd.read_csv('Project7SourceA.csv')
-        source_b = pd.read_csv('Project7SourceB.csv')
+        source_a = pd.read_csv('data/Project7SourceA.csv')
+        source_b = pd.read_csv('data/Project7SourceB.csv')
         return source_a, source_b
     except FileNotFoundError:
         return None, None
