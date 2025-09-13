@@ -4,7 +4,7 @@ An intelligent machine learning system for cross-source record matching and dedu
 
 ## Live Demo
 
-Try the system at: [project7.streamlit.app]
+Try the system at: [https://project7.streamlit.app/]
 
 ## Overview
 
