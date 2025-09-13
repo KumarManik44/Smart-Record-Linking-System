@@ -741,57 +741,101 @@ if source_a_df is not None and source_b_df is not None and model_data is not Non
                 loaded_config = json.load(uploaded_config)
                 st.session_state['loaded_config'] = loaded_config
                 st.success(f"✅ Configuration loaded from {loaded_config.get('timestamp', 'unknown time')}")
-                st.experimental_rerun()
+                st.rerun()
             except Exception as e:
                 st.error(f"❌ Error loading configuration: {str(e)}")
     
-    with col3:
-        if st.button("🔄 Reset All Settings", help="Reset to default configuration"):
-            # Clear session state to reset all sliders
-            for key in list(st.session_state.keys()):
-                if key.startswith('slider_') or key.startswith('config_') or key == 'loaded_config':
-                    del st.session_state[key]
-            st.experimental_rerun()
+with col3:
+    if st.button("🔄 Reset All Settings", help="Reset to default configuration"):
+        try:
+            # Clear relevant session state keys
+            keys_to_clear = [k for k in st.session_state.keys() 
+                           if k.startswith(('slider_', 'config_', 'loaded_', 'preset_'))]
+            
+            for key in keys_to_clear:
+                del st.session_state[key]
+            
+            # Clear loaded config specifically
+            if 'loaded_config' in st.session_state:
+                del st.session_state['loaded_config']
+            
+            st.success("✅ All settings reset to defaults!")
+            st.rerun()
+            
+        except Exception as e:
+            st.error(f"❌ Error resetting: {str(e)}")
+
     
-    with col4:
-        st.markdown("**Quick Presets:**")
-        preset = st.selectbox(
-            "Load Preset:",
-            ["Custom", "Strict Matching", "Balanced", "Flexible"],
-            help="Load predefined rule configurations"
-        )
-        
-        if preset != "Custom":
-            if st.button(f"Apply {preset}"):
+with col4:
+    st.markdown("**Quick Presets:**")
+    preset = st.selectbox(
+        "Load Preset:",
+        ["Custom", "Strict Matching", "Balanced", "Flexible"],
+        help="Load predefined rule configurations",
+        key="preset_selector"
+    )
+    
+    if preset != "Custom":
+        if st.button(f"Apply {preset}", key=f"apply_{preset.lower().replace(' ', '_')}"):
+            try:
                 if preset == "Strict Matching":
                     preset_config = {
                         'timestamp': datetime.now().isoformat(),
                         'thresholds': {'high_confidence': 0.95, 'suspect': 0.80, 'max_candidates': 3},
                         'rule_config': {
-                            'feature_weights': {k: 2.0 if 'exact' in k else 1.0 for k in rule_config['feature_weights']},
-                            'tiers': rule_config['tiers'],
-                            'tie_breakers': rule_config['tie_breakers']
+                            'feature_weights': {
+                                'id_core_contains': 2.0,
+                                'id_core_levenshtein': 2.0,
+                                'id_pattern_compatibility': 1.5,
+                                'name_exact': 3.0,
+                                'name_similarity': 1.0,
+                                'email_exact': 2.0,
+                                'email_similarity': 1.0,
+                                'amount_exact': 3.0,
+                                'amount_close': 2.0,
+                                'amount_reasonable': 1.0,
+                                'date_exact': 2.0,
+                                'date_within_1_day': 1.5,
+                                'date_within_7_days': 1.0,
+                                'po_exact': 2.0,
+                                'po_similarity': 1.0,
+                            },
+                            'tiers': {
+                                'tier1': {'rules': ["ID Exact", "Amount Exact"], 'min_score': 0.95},
+                                'tier2': {'rules': ["ID Contains", "Amount Close"], 'min_score': 0.85},
+                                'tier3': {'rules': ["Name Fuzzy"], 'min_score': 0.70},
+                            },
+                            'tie_breakers': ["Amount Accuracy", "Date Proximity", "ID Similarity"]
                         }
                     }
                 elif preset == "Balanced":
                     preset_config = {
                         'timestamp': datetime.now().isoformat(),
                         'thresholds': {'high_confidence': 0.75, 'suspect': 0.50, 'max_candidates': 5},
-                        'rule_config': rule_config
+                        'rule_config': rule_config  # Use current config as balanced
                     }
                 elif preset == "Flexible":
                     preset_config = {
                         'timestamp': datetime.now().isoformat(),
                         'thresholds': {'high_confidence': 0.60, 'suspect': 0.30, 'max_candidates': 10},
                         'rule_config': {
-                            'feature_weights': {k: 0.5 if 'exact' in k else 1.0 for k in rule_config['feature_weights']},
-                            'tiers': rule_config['tiers'],
-                            'tie_breakers': rule_config['tie_breakers']
+                            'feature_weights': {k: 0.8 for k in rule_config['feature_weights']},
+                            'tiers': {
+                                'tier1': {'rules': ["Amount Exact"], 'min_score': 0.70},
+                                'tier2': {'rules': ["ID Contains", "Name Similarity", "Amount Close"], 'min_score': 0.50},
+                                'tier3': {'rules': ["Name Fuzzy", "Amount Reasonable", "Date 7-Days"], 'min_score': 0.30},
+                            },
+                            'tie_breakers': ["Name Similarity", "Amount Accuracy", "Date Proximity"]
                         }
                     }
                 
                 st.session_state['loaded_config'] = preset_config
-                st.experimental_rerun()
+                st.success(f"✅ {preset} preset applied!")
+                st.rerun()
+                
+            except Exception as e:
+                st.error(f"❌ Error applying preset: {str(e)}")
+
 
     # Run batch matching
     if st.button("🚀 Run Batch Record Linking", type="primary", use_container_width=True):
