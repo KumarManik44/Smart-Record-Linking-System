@@ -670,7 +670,9 @@ if source_a_df is not None and source_b_df is not None and model_data is not Non
         col_reset1, col_reset2 = st.columns([1, 4])
         with col_reset1:
             if st.button("🔄 Reset to Defaults"):
-                st.experimental_rerun()
+                if 'loaded_config' in st.session_state:
+                    del st.session_state['loaded_config']
+                st.rerun()
         with col_reset2:
             st.caption("Reset all rule weights and configurations to default values")
     
@@ -705,7 +707,7 @@ if source_a_df is not None and source_b_df is not None and model_data is not Non
     if st.checkbox("📋 Show Current Configuration Summary"):
         st.json(rule_config)
     
-    # Configuration Management
+    # Configuration Management (FIXED)
     st.subheader("💾 Configuration Management")
     
     col1, col2, col3, col4 = st.columns(4)
@@ -724,7 +726,6 @@ if source_a_df is not None and source_b_df is not None and model_data is not Non
                 'description': f"Configuration saved on {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
             }
             
-            # Convert to JSON string for download
             config_json = json.dumps(config_to_save, indent=2)
             st.download_button(
                 label="📥 Download Configuration",
@@ -740,102 +741,36 @@ if source_a_df is not None and source_b_df is not None and model_data is not Non
             try:
                 loaded_config = json.load(uploaded_config)
                 st.session_state['loaded_config'] = loaded_config
-                st.success(f"✅ Configuration loaded from {loaded_config.get('timestamp', 'unknown time')}")
+                st.success("✅ Configuration loaded!")
                 st.rerun()
             except Exception as e:
                 st.error(f"❌ Error loading configuration: {str(e)}")
     
-with col3:
-    if st.button("🔄 Reset All Settings", help="Reset to default configuration"):
-        try:
-            # Clear relevant session state keys
-            keys_to_clear = [k for k in st.session_state.keys() 
-                           if k.startswith(('slider_', 'config_', 'loaded_', 'preset_'))]
-            
-            for key in keys_to_clear:
-                del st.session_state[key]
-            
-            # Clear loaded config specifically
+    with col3:
+        if st.button("🔄 Reset All Settings", help="Reset to default configuration"):
             if 'loaded_config' in st.session_state:
                 del st.session_state['loaded_config']
-            
-            st.success("✅ All settings reset to defaults!")
+            st.success("✅ Settings reset!")
             st.rerun()
-            
-        except Exception as e:
-            st.error(f"❌ Error resetting: {str(e)}")
-
     
-with col4:
-    st.markdown("**Quick Presets:**")
-    preset = st.selectbox(
-        "Load Preset:",
-        ["Custom", "Strict Matching", "Balanced", "Flexible"],
-        help="Load predefined rule configurations",
-        key="preset_selector"
-    )
-    
-    if preset != "Custom":
-        if st.button(f"Apply {preset}", key=f"apply_{preset.lower().replace(' ', '_')}"):
+    with col4:
+        st.markdown("**Quick Presets:**")
+        preset = st.selectbox("Load Preset:", ["Custom", "Strict", "Balanced", "Flexible"])
+        
+        if preset != "Custom" and st.button(f"Apply {preset}"):
             try:
-                if preset == "Strict Matching":
-                    preset_config = {
-                        'timestamp': datetime.now().isoformat(),
-                        'thresholds': {'high_confidence': 0.95, 'suspect': 0.80, 'max_candidates': 3},
-                        'rule_config': {
-                            'feature_weights': {
-                                'id_core_contains': 2.0,
-                                'id_core_levenshtein': 2.0,
-                                'id_pattern_compatibility': 1.5,
-                                'name_exact': 3.0,
-                                'name_similarity': 1.0,
-                                'email_exact': 2.0,
-                                'email_similarity': 1.0,
-                                'amount_exact': 3.0,
-                                'amount_close': 2.0,
-                                'amount_reasonable': 1.0,
-                                'date_exact': 2.0,
-                                'date_within_1_day': 1.5,
-                                'date_within_7_days': 1.0,
-                                'po_exact': 2.0,
-                                'po_similarity': 1.0,
-                            },
-                            'tiers': {
-                                'tier1': {'rules': ["ID Exact", "Amount Exact"], 'min_score': 0.95},
-                                'tier2': {'rules': ["ID Contains", "Amount Close"], 'min_score': 0.85},
-                                'tier3': {'rules': ["Name Fuzzy"], 'min_score': 0.70},
-                            },
-                            'tie_breakers': ["Amount Accuracy", "Date Proximity", "ID Similarity"]
-                        }
-                    }
+                if preset == "Strict":
+                    config = {'thresholds': {'high_confidence': 0.95, 'suspect': 0.80}}
                 elif preset == "Balanced":
-                    preset_config = {
-                        'timestamp': datetime.now().isoformat(),
-                        'thresholds': {'high_confidence': 0.75, 'suspect': 0.50, 'max_candidates': 5},
-                        'rule_config': rule_config  # Use current config as balanced
-                    }
-                elif preset == "Flexible":
-                    preset_config = {
-                        'timestamp': datetime.now().isoformat(),
-                        'thresholds': {'high_confidence': 0.60, 'suspect': 0.30, 'max_candidates': 10},
-                        'rule_config': {
-                            'feature_weights': {k: 0.8 for k in rule_config['feature_weights']},
-                            'tiers': {
-                                'tier1': {'rules': ["Amount Exact"], 'min_score': 0.70},
-                                'tier2': {'rules': ["ID Contains", "Name Similarity", "Amount Close"], 'min_score': 0.50},
-                                'tier3': {'rules': ["Name Fuzzy", "Amount Reasonable", "Date 7-Days"], 'min_score': 0.30},
-                            },
-                            'tie_breakers': ["Name Similarity", "Amount Accuracy", "Date Proximity"]
-                        }
-                    }
+                    config = {'thresholds': {'high_confidence': 0.75, 'suspect': 0.50}}
+                else:  # Flexible
+                    config = {'thresholds': {'high_confidence': 0.60, 'suspect': 0.30}}
                 
-                st.session_state['loaded_config'] = preset_config
-                st.success(f"✅ {preset} preset applied!")
+                st.session_state['loaded_config'] = config
+                st.success(f"✅ {preset} applied!")
                 st.rerun()
-                
             except Exception as e:
-                st.error(f"❌ Error applying preset: {str(e)}")
-
+                st.error(f"❌ Preset error: {str(e)}")
 
     # Run batch matching
     if st.button("🚀 Run Batch Record Linking", type="primary", use_container_width=True):
@@ -849,7 +784,6 @@ with col4:
         
         # Process all combinations
         all_results = []
-        total_combinations = min(len(source_a_df) * len(source_b_df), 10000)  # Cap at 10k for demo
         current_combo = 0
         
         sample_size_a = min(50, len(source_a_df))  # Sample for demo
@@ -938,7 +872,7 @@ with col4:
                 # Export functionality for matched results
                 st.subheader("📤 Export Results")
                 
-                export_format = st.radio("Export Format:", ["CSV", "JSON", "Excel"], horizontal=True)
+                export_format = st.radio("Export Format:", ["CSV", "JSON"], horizontal=True)
                 
                 if st.button("📥 Download Matched Results"):
                     # Prepare export data
@@ -959,12 +893,6 @@ with col4:
                             'source_b_email': match['record_b'].get('email', ''),
                             'source_b_amount': match['record_b'].get('grand_total', ''),
                             'source_b_date': match['record_b'].get('doc_date', ''),
-                            'top_feature_1': match['top_features'][0][0] if match['top_features'] else '',
-                            'top_feature_1_score': match['top_features'][0][1] if match['top_features'] else 0,
-                            'top_feature_2': match['top_features'][1][0] if len(match['top_features']) > 1 else '',
-                            'top_feature_2_score': match['top_features'][1][1] if len(match['top_features']) > 1 else 0,
-                            'top_feature_3': match['top_features'][2][0] if len(match['top_features']) > 2 else '',
-                            'top_feature_3_score': match['top_features'][2][1] if len(match['top_features']) > 2 else 0,
                             'processing_timestamp': datetime.now().isoformat(),
                             'configuration_used': 'custom_weights' if match.get('custom_weighted') else 'default'
                         })
@@ -979,7 +907,7 @@ with col4:
                             mime="text/csv"
                         )
                     
-                    elif export_format == "JSON":
+                    else:  # JSON
                         full_export = {
                             'export_metadata': {
                                 'timestamp': datetime.now().isoformat(),
@@ -1035,7 +963,7 @@ with col4:
                                     'timestamp': datetime.now().isoformat(),
                                     'analyst_decision': 'accepted'
                                 })
-                                st.success("✅ Match accepted and recorded!")
+                                st.success("✅ Match accepted!")
                             
                             if st.button("❌ Reject Match", key=f"reject_{i}"):
                                 st.session_state['rejected_matches'].append({
@@ -1043,7 +971,7 @@ with col4:
                                     'timestamp': datetime.now().isoformat(),
                                     'analyst_decision': 'rejected'
                                 })
-                                st.error("❌ Match rejected and recorded!")
+                                st.error("❌ Match rejected!")
                             
                             if st.button("📝 Adopt Pattern", key=f"adopt_{i}"):
                                 pattern = {
@@ -1053,7 +981,7 @@ with col4:
                                     'pattern_type': 'analyst_adopted'
                                 }
                                 st.session_state['adopted_patterns'].append(pattern)
-                                st.info("📝 Pattern adopted for future matching!")
+                                st.info("📝 Pattern adopted!")
                         
                         st.subheader("🧠 Why This was Flagged")
                         for j, (feature, score) in enumerate(suspect['top_features'][:3]):
@@ -1086,30 +1014,6 @@ with col4:
             col2.metric("Unmatched Source B Records", unmatched_b_count)
             
             st.info("💡 **Tip:** These records had no good matches. Consider adjusting thresholds or adding new matching rules.")
-            
-            # Export unmatched records
-            if st.button("📥 Export Unmatched Records"):
-                unmatched_a_records = sample_a[~sample_a.index.isin(matched_source_a)]
-                unmatched_b_records = sample_b[~sample_b.index.isin(matched_source_b)]
-                
-                unmatched_export = {
-                    'export_metadata': {
-                        'timestamp': datetime.now().isoformat(),
-                        'unmatched_source_a': len(unmatched_a_records),
-                        'unmatched_source_b': len(unmatched_b_records),
-                        'threshold_used': suspect_confidence_threshold
-                    },
-                    'unmatched_source_a': unmatched_a_records.to_dict('records'),
-                    'unmatched_source_b': unmatched_b_records.to_dict('records')
-                }
-                
-                json_data = json.dumps(unmatched_export, indent=2, default=str)
-                st.download_button(
-                    label="📥 Download Unmatched Records",
-                    data=json_data,
-                    file_name=f"unmatched_records_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
-                    mime="application/json"
-                )
         
         with tab4:
             st.header("📊 Matching Analytics")
@@ -1142,99 +1046,19 @@ with col4:
                 
                 st.plotly_chart(fig, use_container_width=True)
             
-            # Performance tracking and improvement metrics
-            st.subheader("📈 Performance Tracking")
-            
+            # Performance tracking
             current_run = {
                 'timestamp': datetime.now().isoformat(),
                 'total_comparisons': sample_size_a * sample_size_b,
                 'candidates_found': total_processed,
                 'matches_found': len(matched_results),
                 'suspects_found': len(suspect_results),
-                'match_rate': match_rate,
-                'configuration': {
-                    'high_threshold': high_confidence_threshold,
-                    'suspect_threshold': suspect_confidence_threshold,
-                    'custom_weights_used': custom_weighted_count > 0
-                }
+                'match_rate': match_rate
             }
             
             if st.button("📊 Record This Run"):
                 st.session_state['previous_runs'].append(current_run)
-                st.success("✅ Run recorded for performance tracking!")
-            
-            # Show improvement over time
-            if len(st.session_state['previous_runs']) > 1:
-                st.subheader("📈 Improvement Over Time")
-                
-                runs_df = pd.DataFrame(st.session_state['previous_runs'])
-                runs_df['run_number'] = range(1, len(runs_df) + 1)
-                
-                col1, col2 = st.columns(2)
-                
-                with col1:
-                    # Match rate improvement
-                    fig_improvement = px.line(
-                        runs_df, 
-                        x='run_number', 
-                        y='match_rate',
-                        title="Match Rate Improvement Over Runs",
-                        labels={'run_number': 'Run Number', 'match_rate': 'Match Rate (%)'}
-                    )
-                    st.plotly_chart(fig_improvement, use_container_width=True)
-                
-                with col2:
-                    # Suspects trend
-                    fig_suspects = px.line(
-                        runs_df,
-                        x='run_number',
-                        y='suspects_found',
-                        title="Suspects Requiring Review (Should Decrease)",
-                        labels={'run_number': 'Run Number', 'suspects_found': 'Suspects Count'}
-                    )
-                    st.plotly_chart(fig_suspects, use_container_width=True)
-                
-                # Improvement metrics
-                latest_run = runs_df.iloc[-1]
-                previous_run = runs_df.iloc[-2]
-                
-                match_rate_change = latest_run['match_rate'] - previous_run['match_rate']
-                suspects_change = latest_run['suspects_found'] - previous_run['suspects_found']
-                
-                col1, col2, col3 = st.columns(3)
-                col1.metric("Match Rate Change", f"{match_rate_change:+.1f}%", delta=f"{match_rate_change:+.1f}%")
-                col2.metric("Suspects Change", f"{suspects_change:+.0f}", delta=f"{suspects_change:+.0f}")
-                col3.metric("Total Runs", len(runs_df))
-                
-                if match_rate_change > 0:
-                    st.success("🎉 **Improvement Detected!** Match rate increased from previous run.")
-                elif suspects_change < 0:
-                    st.success("🎉 **Improvement Detected!** Fewer suspects requiring manual review.")
-            
-            # Export analytics
-            if st.button("📊 Export Analytics Report"):
-                analytics_report = {
-                    'report_metadata': {
-                        'timestamp': datetime.now().isoformat(),
-                        'report_type': 'matching_analytics'
-                    },
-                    'current_run': current_run,
-                    'historical_runs': st.session_state['previous_runs'],
-                    'analyst_feedback': {
-                        'accepted_matches': len(st.session_state['accepted_matches']),
-                        'rejected_matches': len(st.session_state['rejected_matches']),
-                        'adopted_patterns': len(st.session_state['adopted_patterns'])
-                    },
-                    'configuration': rule_config
-                }
-                
-                json_data = json.dumps(analytics_report, indent=2)
-                st.download_button(
-                    label="📥 Download Analytics Report",
-                    data=json_data,
-                    file_name=f"analytics_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
-                    mime="application/json"
-                )
+                st.success("✅ Run recorded!")
 
 else:
     # Welcome screen
