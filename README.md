@@ -2,9 +2,9 @@
 
 An intelligent machine learning system for cross-source record matching and deduplication, featuring advanced synthetic training data generation and sophisticated feature engineering.
 
-## Live Demo
+## 🚀 Live Demo
 
-Try the system at: [https://project7.streamlit.app/]
+[**Try the App Here**](https://project7.streamlit.app/)
 
 ## Overview
 
