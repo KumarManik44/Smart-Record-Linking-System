@@ -353,19 +353,92 @@ def load_sample_data():
         st.error(f"❌ Error loading sample data: {str(e)}")
         return None, None
 
-def predict_record_match(record_a: dict, record_b: dict, model_data: dict) -> dict:
-    """Production function to predict if two records match"""
+def predict_record_match_with_rules(record_a: dict, record_b: dict, model_data: dict, rule_config: dict = None) -> dict:
+    """Enhanced prediction function that applies custom rule weights"""
     if model_data is None:
         return None
     
     try:
         # Extract features using the loaded feature extractor
         features = model_data['feature_extractor'].extract_pair_features(record_a, record_b)
+        
+        # Apply custom weights if provided
+        if rule_config and 'feature_weights' in rule_config:
+            weighted_features = {}
+            weights = rule_config['feature_weights']
+            
+            for feature_name, feature_value in features.items():
+                # Map feature names to weight keys
+                weight_key = None
+                if 'id_core_contains' in feature_name:
+                    weight_key = 'id_core_contains'
+                elif 'id_core_levenshtein' in feature_name:
+                    weight_key = 'id_core_levenshtein'
+                elif 'id_pattern_compatibility' in feature_name:
+                    weight_key = 'id_pattern_compatibility'
+                elif 'name_exact_match' in feature_name:
+                    weight_key = 'name_exact'
+                elif 'name_' in feature_name and ('levenshtein' in feature_name or 'jaro' in feature_name):
+                    weight_key = 'name_similarity'
+                elif 'email_exact_match' in feature_name:
+                    weight_key = 'email_exact'
+                elif 'email_' in feature_name and ('levenshtein' in feature_name or 'jaro' in feature_name):
+                    weight_key = 'email_similarity'
+                elif 'amount_exact_match' in feature_name:
+                    weight_key = 'amount_exact'
+                elif 'amount_close_match' in feature_name:
+                    weight_key = 'amount_close'
+                elif 'amount_reasonable_match' in feature_name:
+                    weight_key = 'amount_reasonable'
+                elif 'date_exact_match' in feature_name:
+                    weight_key = 'date_exact'
+                elif 'date_within_1_day' in feature_name:
+                    weight_key = 'date_within_1_day'
+                elif 'date_within_7_days' in feature_name:
+                    weight_key = 'date_within_7_days'
+                elif 'po_exact_match' in feature_name:
+                    weight_key = 'po_exact'
+                elif 'po_' in feature_name:
+                    weight_key = 'po_similarity'
+                
+                # Apply weight
+                if weight_key and weight_key in weights:
+                    weighted_features[feature_name] = feature_value * weights[weight_key]
+                else:
+                    weighted_features[feature_name] = feature_value
+            
+            features = weighted_features
+        
         feature_vector = np.array([list(features.values())])
         
         # Make prediction
         probabilities = model_data['model'].predict_proba(feature_vector)[0]
         prediction = model_data['model'].predict(feature_vector)[0]
+        
+        # Calculate tier-based score if tiers are configured
+        tier_score = None
+        matched_tier = None
+        
+        if rule_config and 'tiers' in rule_config:
+            for tier_name in ['tier1', 'tier2', 'tier3']:
+                tier_config = rule_config['tiers'][tier_name]
+                tier_features = []
+                
+                # Extract relevant features for this tier
+                for rule in tier_config['rules']:
+                    if rule == "ID Exact" and features.get('id_core_exact', 0) == 1.0:
+                        tier_features.append(1.0)
+                    elif rule == "ID Contains" and features.get('id_core_contains', 0) == 1.0:
+                        tier_features.append(1.0)
+                    elif rule == "Amount Exact" and features.get('amount_exact_match', 0) == 1.0:
+                        tier_features.append(1.0)
+                    # Add more rule mappings as needed
+                
+                if tier_features:
+                    tier_score = sum(tier_features) / len(tier_features)
+                    if tier_score >= tier_config['min_score']:
+                        matched_tier = tier_name
+                        break
         
         # Get feature importance contributions
         feature_importance = model_data['model'].feature_importances_
@@ -383,7 +456,10 @@ def predict_record_match(record_a: dict, record_b: dict, model_data: dict) -> di
             'no_match_probability': float(probabilities[0]),
             'confidence': 'High' if max(probabilities) > 0.8 else 'Medium' if max(probabilities) > 0.6 else 'Low',
             'top_contributing_features': top_features,
-            'all_features': features
+            'all_features': features,
+            'tier_score': tier_score,
+            'matched_tier': matched_tier,
+            'custom_weighted': rule_config is not None
         }
     except Exception as e:
         st.error(f"❌ Prediction error: {str(e)}")
@@ -473,6 +549,137 @@ if source_a_df is not None and source_b_df is not None and model_data is not Non
         max_candidates = st.slider("Max Candidates per Record", 1, 10, 3)
         st.caption("Maximum number of potential matches to consider")
     
+    # Advanced Rule Configuration
+    with st.expander("🔧 **Advanced Rule Configuration** - Control Matching Logic", expanded=False):
+        st.markdown("**Configure rule weights and priorities for different matching criteria**")
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.subheader("📊 Feature Weights")
+            
+            # ID Pattern Rules
+            st.markdown("**ID Pattern Rules**")
+            id_core_contains_weight = st.slider("ID Core Contains", 0.0, 2.0, 1.0, 0.1, 
+                                               help="Weight for when one ID contains the other's numeric core")
+            id_core_levenshtein_weight = st.slider("ID Similarity", 0.0, 2.0, 1.0, 0.1,
+                                                  help="Weight for ID string similarity")
+            id_pattern_compatibility_weight = st.slider("Pattern Compatibility", 0.0, 2.0, 1.0, 0.1,
+                                                       help="Weight for compatible ID formats (INV vs numeric)")
+            
+            # String Matching Rules
+            st.markdown("**String Matching Rules**")
+            name_exact_weight = st.slider("Name Exact Match", 0.0, 3.0, 1.0, 0.1)
+            name_similarity_weight = st.slider("Name Similarity", 0.0, 2.0, 1.0, 0.1)
+            email_exact_weight = st.slider("Email Exact Match", 0.0, 2.0, 1.0, 0.1)
+            email_similarity_weight = st.slider("Email Similarity", 0.0, 2.0, 1.0, 0.1)
+        
+        with col2:
+            st.subheader("💰 Business Logic Rules")
+            
+            # Amount Rules
+            st.markdown("**Amount Matching Rules**")
+            amount_exact_weight = st.slider("Amount Exact Match", 0.0, 3.0, 1.0, 0.1)
+            amount_close_weight = st.slider("Amount Close Match (±1%)", 0.0, 2.0, 1.0, 0.1)
+            amount_reasonable_weight = st.slider("Amount Reasonable (±5%)", 0.0, 1.5, 1.0, 0.1)
+            
+            # Date Rules
+            st.markdown("**Date Matching Rules**")
+            date_exact_weight = st.slider("Date Exact Match", 0.0, 2.0, 1.0, 0.1)
+            date_within_1_day_weight = st.slider("Date Within 1 Day", 0.0, 1.5, 1.0, 0.1)
+            date_within_7_days_weight = st.slider("Date Within 7 Days", 0.0, 1.0, 1.0, 0.1)
+            
+            # PO Rules
+            st.markdown("**Purchase Order Rules**")
+            po_exact_weight = st.slider("PO Exact Match", 0.0, 2.0, 1.0, 0.1)
+            po_similarity_weight = st.slider("PO Similarity", 0.0, 1.5, 1.0, 0.1)
+        
+        # Rule Tier Configuration
+        st.subheader("🏆 Rule Tier Priorities")
+        st.markdown("**Define progressive matching tiers (Tier 1 = Strictest, Tier 3 = Most Flexible)**")
+        
+        tier_col1, tier_col2, tier_col3 = st.columns(3)
+        
+        with tier_col1:
+            st.markdown("**Tier 1: Exact Matches**")
+            tier1_rules = st.multiselect(
+                "Select Tier 1 Rules:",
+                ["ID Exact", "Name Exact", "Email Exact", "Amount Exact", "Date Exact", "PO Exact"],
+                default=["ID Exact", "Amount Exact"],
+                help="Rules that must match exactly"
+            )
+            tier1_min_score = st.slider("Tier 1 Min Score", 0.8, 1.0, 0.95, 0.01)
+        
+        with tier_col2:
+            st.markdown("**Tier 2: Pattern Matches**")
+            tier2_rules = st.multiselect(
+                "Select Tier 2 Rules:",
+                ["ID Contains", "Name Similarity", "Email Similarity", "Amount Close", "Date 1-Day"],
+                default=["ID Contains", "Name Similarity", "Amount Close"],
+                help="Rules with pattern-based matching"
+            )
+            tier2_min_score = st.slider("Tier 2 Min Score", 0.6, 0.9, 0.75, 0.01)
+        
+        with tier_col3:
+            st.markdown("**Tier 3: Fuzzy Matches**")
+            tier3_rules = st.multiselect(
+                "Select Tier 3 Rules:",
+                ["Name Fuzzy", "Email Fuzzy", "Amount Reasonable", "Date 7-Days", "PO Similarity"],
+                default=["Name Fuzzy", "Amount Reasonable"],
+                help="Flexible rules for edge cases"
+            )
+            tier3_min_score = st.slider("Tier 3 Min Score", 0.3, 0.7, 0.5, 0.01)
+        
+        # Tie-breaker Configuration
+        st.subheader("⚖️ Tie-Breaker Rules")
+        st.markdown("**When multiple candidates have similar scores, use these tie-breakers in order:**")
+        
+        tie_breaker_priority = st.multiselect(
+            "Tie-breaker Priority (drag to reorder):",
+            ["Date Proximity", "Amount Accuracy", "Name Similarity", "Email Match", "ID Similarity"],
+            default=["Amount Accuracy", "Date Proximity", "Name Similarity"],
+            help="First tie-breaker has highest priority"
+        )
+        
+        # Reset to defaults
+        col_reset1, col_reset2 = st.columns([1, 4])
+        with col_reset1:
+            if st.button("🔄 Reset to Defaults"):
+                st.experimental_rerun()
+        with col_reset2:
+            st.caption("Reset all rule weights and configurations to default values")
+    
+    # Store configuration in session state
+    rule_config = {
+        'feature_weights': {
+            'id_core_contains': id_core_contains_weight,
+            'id_core_levenshtein': id_core_levenshtein_weight,
+            'id_pattern_compatibility': id_pattern_compatibility_weight,
+            'name_exact': name_exact_weight,
+            'name_similarity': name_similarity_weight,
+            'email_exact': email_exact_weight,
+            'email_similarity': email_similarity_weight,
+            'amount_exact': amount_exact_weight,
+            'amount_close': amount_close_weight,
+            'amount_reasonable': amount_reasonable_weight,
+            'date_exact': date_exact_weight,
+            'date_within_1_day': date_within_1_day_weight,
+            'date_within_7_days': date_within_7_days_weight,
+            'po_exact': po_exact_weight,
+            'po_similarity': po_similarity_weight,
+        },
+        'tiers': {
+            'tier1': {'rules': tier1_rules, 'min_score': tier1_min_score},
+            'tier2': {'rules': tier2_rules, 'min_score': tier2_min_score},
+            'tier3': {'rules': tier3_rules, 'min_score': tier3_min_score},
+        },
+        'tie_breakers': tie_breaker_priority
+    }
+    
+    # Display current configuration summary
+    if st.checkbox("📋 Show Current Configuration Summary"):
+        st.json(rule_config)
+
     # Run batch matching
     if st.button("🚀 Run Batch Record Linking", type="primary", use_container_width=True):
         
@@ -504,8 +711,8 @@ if source_a_df is not None and source_b_df is not None and model_data is not Non
                     progress_bar.progress(progress)
                     status_text.text(f'Processed {current_combo}/{sample_size_a * sample_size_b} combinations')
                 
-                # Get prediction
-                result = predict_record_match(record_a.to_dict(), record_b.to_dict(), model_data)
+                # Get prediction with custom rules
+                result = predict_record_match_with_rules(record_a.to_dict(), record_b.to_dict(), model_data, rule_config)
                 
                 if result and result['match_probability'] > suspect_confidence_threshold:
                     all_results.append({
@@ -517,7 +724,10 @@ if source_a_df is not None and source_b_df is not None and model_data is not Non
                         'confidence_level': result['confidence'],
                         'prediction': result['prediction'],
                         'top_features': result['top_contributing_features'],
-                        'all_features': result['all_features']
+                        'all_features': result['all_features'],
+                        'tier_score': result.get('tier_score'),
+                        'matched_tier': result.get('matched_tier'),
+                        'custom_weighted': result.get('custom_weighted', False)
                     })
         
         # Clear progress
@@ -547,7 +757,10 @@ if source_a_df is not None and source_b_df is not None and model_data is not Non
             
             if matched_results:
                 for i, match in enumerate(matched_results[:10]):  # Show top 10
-                    with st.expander(f"Match {i+1}: {match['match_probability']:.1%} confidence"):
+                    tier_info = f" (Tier: {match['matched_tier']})" if match['matched_tier'] else ""
+                    weight_info = " 🎛️" if match['custom_weighted'] else ""
+                    
+                    with st.expander(f"Match {i+1}: {match['match_probability']:.1%} confidence{tier_info}{weight_info}"):
                         col1, col2 = st.columns(2)
                         
                         with col1:
@@ -561,6 +774,9 @@ if source_a_df is not None and source_b_df is not None and model_data is not Non
                         st.subheader("🧠 Why This Matched")
                         for j, (feature, score) in enumerate(match['top_features'][:3]):
                             st.write(f"**{j+1}.** {feature.replace('_', ' ').title()}: {score:.4f}")
+                        
+                        if match['tier_score']:
+                            st.write(f"**Tier Score:** {match['tier_score']:.3f}")
             else:
                 st.info("No high-confidence matches found. Consider lowering the threshold.")
         
@@ -570,7 +786,10 @@ if source_a_df is not None and source_b_df is not None and model_data is not Non
             
             if suspect_results:
                 for i, suspect in enumerate(suspect_results[:10]):  # Show top 10
-                    with st.expander(f"Suspect {i+1}: {suspect['match_probability']:.1%} confidence"):
+                    tier_info = f" (Tier: {suspect['matched_tier']})" if suspect['matched_tier'] else ""
+                    weight_info = " 🎛️" if suspect['custom_weighted'] else ""
+                    
+                    with st.expander(f"Suspect {i+1}: {suspect['match_probability']:.1%} confidence{tier_info}{weight_info}"):
                         col1, col2, col3 = st.columns([2, 2, 1])
                         
                         with col1:
@@ -625,18 +844,18 @@ if source_a_df is not None and source_b_df is not None and model_data is not Non
             # Summary metrics
             total_processed = len(all_results)
             match_rate = len(matched_results) / total_processed * 100 if total_processed > 0 else 0
+            custom_weighted_count = sum(1 for r in all_results if r.get('custom_weighted', False))
             
             col1, col2, col3, col4 = st.columns(4)
             col1.metric("Total Comparisons", f"{sample_size_a * sample_size_b:,}")
             col2.metric("Candidates Found", total_processed)
             col3.metric("Match Rate", f"{match_rate:.1f}%")
-            col4.metric("Review Required", len(suspect_results))
+            col4.metric("Custom Weighted", custom_weighted_count)
             
             # Distribution chart
             if all_results:
                 probabilities = [r['match_probability'] for r in all_results]
                 
-                import plotly.express as px
                 fig = px.histogram(
                     x=probabilities,
                     nbins=20,
@@ -651,7 +870,7 @@ if source_a_df is not None and source_b_df is not None and model_data is not Non
                 st.plotly_chart(fig, use_container_width=True)
 
 else:
-    # Welcome screen (keep existing)
+    # Welcome screen
     st.info("👋 **Welcome!** Please load your data and ensure the model file is available to start using the record linking system.")
     
     if model_data is None:
@@ -660,7 +879,7 @@ else:
     if source_a_df is None or source_b_df is None:
         st.warning("📁 **Data not loaded.** Please select a data source in the sidebar.")
 
-# Footer (keep existing)
+# Footer
 st.markdown("---")
 st.markdown("""
 <div style='text-align: center; color: #666; font-size: 0.9rem;'>
