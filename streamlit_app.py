@@ -8,6 +8,7 @@ from datetime import datetime
 import re
 from difflib import SequenceMatcher
 from typing import Dict, List, Tuple, Any
+import json
 
 # ===== REQUIRED CLASSES FOR PICKLE LOADING =====
 # These classes must be defined before loading the pickle file
@@ -490,6 +491,19 @@ def create_feature_chart(features_dict):
     
     return fig
 
+# Initialize session state for performance tracking
+if 'previous_runs' not in st.session_state:
+    st.session_state['previous_runs'] = []
+
+if 'accepted_matches' not in st.session_state:
+    st.session_state['accepted_matches'] = []
+
+if 'rejected_matches' not in st.session_state:
+    st.session_state['rejected_matches'] = []
+
+if 'adopted_patterns' not in st.session_state:
+    st.session_state['adopted_patterns'] = []
+
 # Load model and sample data
 model_data = load_model()
 sample_source_a, sample_source_b = load_sample_data()
@@ -536,17 +550,28 @@ if source_a_df is not None and source_b_df is not None and model_data is not Non
     # Configuration section
     st.header("⚙️ Matching Configuration")
     
+    # Load configuration from session state if available
+    if 'loaded_config' in st.session_state:
+        config = st.session_state['loaded_config']
+        default_high = config.get('thresholds', {}).get('high_confidence', 0.8)
+        default_suspect = config.get('thresholds', {}).get('suspect', 0.3)
+        default_max = config.get('thresholds', {}).get('max_candidates', 3)
+    else:
+        default_high = 0.8
+        default_suspect = 0.3
+        default_max = 3
+    
     col1, col2, col3 = st.columns(3)
     with col1:
-        high_confidence_threshold = st.slider("High Confidence Threshold", 0.5, 1.0, 0.8, 0.05)
+        high_confidence_threshold = st.slider("High Confidence Threshold", 0.5, 1.0, default_high, 0.05)
         st.caption("Records above this threshold are automatically matched")
     
     with col2:
-        suspect_confidence_threshold = st.slider("Suspect Threshold", 0.1, 0.8, 0.3, 0.05)
+        suspect_confidence_threshold = st.slider("Suspect Threshold", 0.1, 0.8, default_suspect, 0.05)
         st.caption("Records between thresholds need manual review")
     
     with col3:
-        max_candidates = st.slider("Max Candidates per Record", 1, 10, 3)
+        max_candidates = st.slider("Max Candidates per Record", 1, 10, default_max)
         st.caption("Maximum number of potential matches to consider")
     
     # Advanced Rule Configuration
@@ -679,6 +704,94 @@ if source_a_df is not None and source_b_df is not None and model_data is not Non
     # Display current configuration summary
     if st.checkbox("📋 Show Current Configuration Summary"):
         st.json(rule_config)
+    
+    # Configuration Management
+    st.subheader("💾 Configuration Management")
+    
+    col1, col2, col3, col4 = st.columns(4)
+    
+    with col1:
+        if st.button("💾 Save Configuration", help="Save current rule settings as JSON"):
+            config_to_save = {
+                'timestamp': datetime.now().isoformat(),
+                'version': '1.0',
+                'thresholds': {
+                    'high_confidence': high_confidence_threshold,
+                    'suspect': suspect_confidence_threshold,
+                    'max_candidates': max_candidates
+                },
+                'rule_config': rule_config,
+                'description': f"Configuration saved on {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+            }
+            
+            # Convert to JSON string for download
+            config_json = json.dumps(config_to_save, indent=2)
+            st.download_button(
+                label="📥 Download Configuration",
+                data=config_json,
+                file_name=f"record_linking_config_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
+                mime="application/json"
+            )
+            st.success("✅ Configuration ready for download!")
+    
+    with col2:
+        uploaded_config = st.file_uploader("📂 Load Configuration", type="json", help="Upload a saved configuration file")
+        if uploaded_config is not None:
+            try:
+                loaded_config = json.load(uploaded_config)
+                st.session_state['loaded_config'] = loaded_config
+                st.success(f"✅ Configuration loaded from {loaded_config.get('timestamp', 'unknown time')}")
+                st.experimental_rerun()
+            except Exception as e:
+                st.error(f"❌ Error loading configuration: {str(e)}")
+    
+    with col3:
+        if st.button("🔄 Reset All Settings", help="Reset to default configuration"):
+            # Clear session state to reset all sliders
+            for key in list(st.session_state.keys()):
+                if key.startswith('slider_') or key.startswith('config_') or key == 'loaded_config':
+                    del st.session_state[key]
+            st.experimental_rerun()
+    
+    with col4:
+        st.markdown("**Quick Presets:**")
+        preset = st.selectbox(
+            "Load Preset:",
+            ["Custom", "Strict Matching", "Balanced", "Flexible"],
+            help="Load predefined rule configurations"
+        )
+        
+        if preset != "Custom":
+            if st.button(f"Apply {preset}"):
+                if preset == "Strict Matching":
+                    preset_config = {
+                        'timestamp': datetime.now().isoformat(),
+                        'thresholds': {'high_confidence': 0.95, 'suspect': 0.80, 'max_candidates': 3},
+                        'rule_config': {
+                            'feature_weights': {k: 2.0 if 'exact' in k else 1.0 for k in rule_config['feature_weights']},
+                            'tiers': rule_config['tiers'],
+                            'tie_breakers': rule_config['tie_breakers']
+                        }
+                    }
+                elif preset == "Balanced":
+                    preset_config = {
+                        'timestamp': datetime.now().isoformat(),
+                        'thresholds': {'high_confidence': 0.75, 'suspect': 0.50, 'max_candidates': 5},
+                        'rule_config': rule_config
+                    }
+                elif preset == "Flexible":
+                    preset_config = {
+                        'timestamp': datetime.now().isoformat(),
+                        'thresholds': {'high_confidence': 0.60, 'suspect': 0.30, 'max_candidates': 10},
+                        'rule_config': {
+                            'feature_weights': {k: 0.5 if 'exact' in k else 1.0 for k in rule_config['feature_weights']},
+                            'tiers': rule_config['tiers'],
+                            'tie_breakers': rule_config['tie_breakers']
+                        }
+                    }
+                
+                st.session_state['loaded_config'] = preset_config
+                st.experimental_rerun()
 
     # Run batch matching
     if st.button("🚀 Run Batch Record Linking", type="primary", use_container_width=True):
@@ -777,6 +890,75 @@ if source_a_df is not None and source_b_df is not None and model_data is not Non
                         
                         if match['tier_score']:
                             st.write(f"**Tier Score:** {match['tier_score']:.3f}")
+                
+                # Export functionality for matched results
+                st.subheader("📤 Export Results")
+                
+                export_format = st.radio("Export Format:", ["CSV", "JSON", "Excel"], horizontal=True)
+                
+                if st.button("📥 Download Matched Results"):
+                    # Prepare export data
+                    export_data = []
+                    for i, match in enumerate(matched_results):
+                        export_data.append({
+                            'match_rank': i + 1,
+                            'match_probability': match['match_probability'],
+                            'confidence_level': match['confidence_level'],
+                            'matched_tier': match.get('matched_tier', 'N/A'),
+                            'source_a_id': match['record_a'].get('invoice_id', ''),
+                            'source_a_name': match['record_a'].get('customer_name', ''),
+                            'source_a_email': match['record_a'].get('customer_email', ''),
+                            'source_a_amount': match['record_a'].get('total_amount', ''),
+                            'source_a_date': match['record_a'].get('invoice_date', ''),
+                            'source_b_id': match['record_b'].get('ref_code', ''),
+                            'source_b_name': match['record_b'].get('client', ''),
+                            'source_b_email': match['record_b'].get('email', ''),
+                            'source_b_amount': match['record_b'].get('grand_total', ''),
+                            'source_b_date': match['record_b'].get('doc_date', ''),
+                            'top_feature_1': match['top_features'][0][0] if match['top_features'] else '',
+                            'top_feature_1_score': match['top_features'][0][1] if match['top_features'] else 0,
+                            'top_feature_2': match['top_features'][1][0] if len(match['top_features']) > 1 else '',
+                            'top_feature_2_score': match['top_features'][1][1] if len(match['top_features']) > 1 else 0,
+                            'top_feature_3': match['top_features'][2][0] if len(match['top_features']) > 2 else '',
+                            'top_feature_3_score': match['top_features'][2][1] if len(match['top_features']) > 2 else 0,
+                            'processing_timestamp': datetime.now().isoformat(),
+                            'configuration_used': 'custom_weights' if match.get('custom_weighted') else 'default'
+                        })
+                    
+                    if export_format == "CSV":
+                        df = pd.DataFrame(export_data)
+                        csv = df.to_csv(index=False)
+                        st.download_button(
+                            label="📥 Download CSV",
+                            data=csv,
+                            file_name=f"matched_records_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                            mime="text/csv"
+                        )
+                    
+                    elif export_format == "JSON":
+                        full_export = {
+                            'export_metadata': {
+                                'timestamp': datetime.now().isoformat(),
+                                'total_matches': len(matched_results),
+                                'configuration': rule_config,
+                                'thresholds': {
+                                    'high_confidence': high_confidence_threshold,
+                                    'suspect': suspect_confidence_threshold
+                                }
+                            },
+                            'matches': export_data
+                        }
+                        
+                        json_data = json.dumps(full_export, indent=2)
+                        st.download_button(
+                            label="📥 Download JSON",
+                            data=json_data,
+                            file_name=f"matched_records_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
+                            mime="application/json"
+                        )
+                    
+                    st.success(f"✅ Export prepared! {len(export_data)} matched records with full provenance.")
+                    
             else:
                 st.info("No high-confidence matches found. Consider lowering the threshold.")
         
@@ -804,20 +986,43 @@ if source_a_df is not None and source_b_df is not None and model_data is not Non
                             st.subheader("👥 Review Decision")
                             
                             if st.button("✅ Accept Match", key=f"accept_{i}"):
-                                st.success("✅ Match accepted!")
-                                # TODO: Store decision
+                                st.session_state['accepted_matches'].append({
+                                    'pair': suspect,
+                                    'timestamp': datetime.now().isoformat(),
+                                    'analyst_decision': 'accepted'
+                                })
+                                st.success("✅ Match accepted and recorded!")
                             
                             if st.button("❌ Reject Match", key=f"reject_{i}"):
-                                st.error("❌ Match rejected!")
-                                # TODO: Store decision
+                                st.session_state['rejected_matches'].append({
+                                    'pair': suspect,
+                                    'timestamp': datetime.now().isoformat(),
+                                    'analyst_decision': 'rejected'
+                                })
+                                st.error("❌ Match rejected and recorded!")
                             
                             if st.button("📝 Adopt Pattern", key=f"adopt_{i}"):
+                                pattern = {
+                                    'top_features': suspect['top_features'][:3],
+                                    'match_probability': suspect['match_probability'],
+                                    'timestamp': datetime.now().isoformat(),
+                                    'pattern_type': 'analyst_adopted'
+                                }
+                                st.session_state['adopted_patterns'].append(pattern)
                                 st.info("📝 Pattern adopted for future matching!")
-                                # TODO: Learn from this pattern
                         
                         st.subheader("🧠 Why This was Flagged")
                         for j, (feature, score) in enumerate(suspect['top_features'][:3]):
                             st.write(f"**{j+1}.** {feature.replace('_', ' ').title()}: {score:.4f}")
+                
+                # Show analyst feedback summary
+                if st.session_state['accepted_matches'] or st.session_state['rejected_matches']:
+                    st.subheader("📋 Analyst Feedback Summary")
+                    col1, col2, col3 = st.columns(3)
+                    col1.metric("Accepted", len(st.session_state['accepted_matches']))
+                    col2.metric("Rejected", len(st.session_state['rejected_matches']))
+                    col3.metric("Patterns Adopted", len(st.session_state['adopted_patterns']))
+                    
             else:
                 st.info("No suspect matches found.")
         
@@ -837,6 +1042,30 @@ if source_a_df is not None and source_b_df is not None and model_data is not Non
             col2.metric("Unmatched Source B Records", unmatched_b_count)
             
             st.info("💡 **Tip:** These records had no good matches. Consider adjusting thresholds or adding new matching rules.")
+            
+            # Export unmatched records
+            if st.button("📥 Export Unmatched Records"):
+                unmatched_a_records = sample_a[~sample_a.index.isin(matched_source_a)]
+                unmatched_b_records = sample_b[~sample_b.index.isin(matched_source_b)]
+                
+                unmatched_export = {
+                    'export_metadata': {
+                        'timestamp': datetime.now().isoformat(),
+                        'unmatched_source_a': len(unmatched_a_records),
+                        'unmatched_source_b': len(unmatched_b_records),
+                        'threshold_used': suspect_confidence_threshold
+                    },
+                    'unmatched_source_a': unmatched_a_records.to_dict('records'),
+                    'unmatched_source_b': unmatched_b_records.to_dict('records')
+                }
+                
+                json_data = json.dumps(unmatched_export, indent=2, default=str)
+                st.download_button(
+                    label="📥 Download Unmatched Records",
+                    data=json_data,
+                    file_name=f"unmatched_records_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
+                    mime="application/json"
+                )
         
         with tab4:
             st.header("📊 Matching Analytics")
@@ -868,6 +1097,100 @@ if source_a_df is not None and source_b_df is not None and model_data is not Non
                              annotation_text="Suspect Threshold")
                 
                 st.plotly_chart(fig, use_container_width=True)
+            
+            # Performance tracking and improvement metrics
+            st.subheader("📈 Performance Tracking")
+            
+            current_run = {
+                'timestamp': datetime.now().isoformat(),
+                'total_comparisons': sample_size_a * sample_size_b,
+                'candidates_found': total_processed,
+                'matches_found': len(matched_results),
+                'suspects_found': len(suspect_results),
+                'match_rate': match_rate,
+                'configuration': {
+                    'high_threshold': high_confidence_threshold,
+                    'suspect_threshold': suspect_confidence_threshold,
+                    'custom_weights_used': custom_weighted_count > 0
+                }
+            }
+            
+            if st.button("📊 Record This Run"):
+                st.session_state['previous_runs'].append(current_run)
+                st.success("✅ Run recorded for performance tracking!")
+            
+            # Show improvement over time
+            if len(st.session_state['previous_runs']) > 1:
+                st.subheader("📈 Improvement Over Time")
+                
+                runs_df = pd.DataFrame(st.session_state['previous_runs'])
+                runs_df['run_number'] = range(1, len(runs_df) + 1)
+                
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    # Match rate improvement
+                    fig_improvement = px.line(
+                        runs_df, 
+                        x='run_number', 
+                        y='match_rate',
+                        title="Match Rate Improvement Over Runs",
+                        labels={'run_number': 'Run Number', 'match_rate': 'Match Rate (%)'}
+                    )
+                    st.plotly_chart(fig_improvement, use_container_width=True)
+                
+                with col2:
+                    # Suspects trend
+                    fig_suspects = px.line(
+                        runs_df,
+                        x='run_number',
+                        y='suspects_found',
+                        title="Suspects Requiring Review (Should Decrease)",
+                        labels={'run_number': 'Run Number', 'suspects_found': 'Suspects Count'}
+                    )
+                    st.plotly_chart(fig_suspects, use_container_width=True)
+                
+                # Improvement metrics
+                latest_run = runs_df.iloc[-1]
+                previous_run = runs_df.iloc[-2]
+                
+                match_rate_change = latest_run['match_rate'] - previous_run['match_rate']
+                suspects_change = latest_run['suspects_found'] - previous_run['suspects_found']
+                
+                col1, col2, col3 = st.columns(3)
+                col1.metric("Match Rate Change", f"{match_rate_change:+.1f}%", delta=f"{match_rate_change:+.1f}%")
+                col2.metric("Suspects Change", f"{suspects_change:+.0f}", delta=f"{suspects_change:+.0f}")
+                col3.metric("Total Runs", len(runs_df))
+                
+                if match_rate_change > 0:
+                    st.success("🎉 **Improvement Detected!** Match rate increased from previous run.")
+                elif suspects_change < 0:
+                    st.success("🎉 **Improvement Detected!** Fewer suspects requiring manual review.")
+            
+            # Export analytics
+            if st.button("📊 Export Analytics Report"):
+                analytics_report = {
+                    'report_metadata': {
+                        'timestamp': datetime.now().isoformat(),
+                        'report_type': 'matching_analytics'
+                    },
+                    'current_run': current_run,
+                    'historical_runs': st.session_state['previous_runs'],
+                    'analyst_feedback': {
+                        'accepted_matches': len(st.session_state['accepted_matches']),
+                        'rejected_matches': len(st.session_state['rejected_matches']),
+                        'adopted_patterns': len(st.session_state['adopted_patterns'])
+                    },
+                    'configuration': rule_config
+                }
+                
+                json_data = json.dumps(analytics_report, indent=2)
+                st.download_button(
+                    label="📥 Download Analytics Report",
+                    data=json_data,
+                    file_name=f"analytics_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
+                    mime="application/json"
+                )
 
 else:
     # Welcome screen
@@ -884,6 +1207,6 @@ st.markdown("---")
 st.markdown("""
 <div style='text-align: center; color: #666; font-size: 0.9rem;'>
     🔗 Cross-Source Record Linking System | Built with Streamlit & Scikit-learn | 
-    Progressive Matching with Analyst Control
+    Progressive Matching with Full Analyst Control & Export Capabilities
 </div>
 """, unsafe_allow_html=True)
